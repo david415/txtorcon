@@ -11,6 +11,8 @@
 
 from twisted.internet import reactor
 from twisted.web import server, resource
+from twisted.internet.endpoints import serverFromString
+
 import txtorcon
 
 
@@ -22,7 +24,6 @@ class Simple(resource.Resource):
 
 site = server.Site(Simple())
 
-
 def setup_failed(arg):
     print "SETUP FAILED", arg
     reactor.stop()
@@ -33,29 +34,18 @@ def setup_complete(port):
     print "http://%s:%d" % (port.onion_uri, port.onion_port)
     print "locally listening on", port.getHost()
 
-
-def setup_hidden_service(tor_process_protocol):
-    config = txtorcon.TorConfig(tor_process_protocol.tor_protocol)
-    public_port = 80
-    hs_endpoint = txtorcon.TCPHiddenServiceEndpoint(reactor, config,
-                                                    public_port)
-
-    ## the important thing here is that "site" implements
-    ## IProtocolFactory -- this could be any service at all,
-    ## obviously.
-    hs_endpoint.listen(site).addCallback(setup_complete).addErrback(setup_failed)
-
-
-def updates(prog, tag, summary):
-    print "%d%%: %s" % (prog, summary)
+def received_endpoint(endpoint):
+    print "endpoint %s" % (endpoint,)
+    endpoint.listen(site).addCallback(setup_complete).addErrback(setup_failed)
 
 # set a couple options to avoid conflict with the defaults if a Tor is
 # already running
-config = txtorcon.TorConfig()
-config.SOCKSPort = 0
-config.ControlPort = 9089
 
-d = txtorcon.launch_tor(config, reactor, progress_updates=updates, timeout=60)
-d.addCallback(setup_hidden_service)
-d.addErrback(setup_failed)
+hs_endpoint_deferred = serverFromString(reactor, "onion:socksPort=0:controlPort=9089:publicPort=80")
+
+print "hs_endpoint_deferred %s" % (hs_endpoint_deferred,)
+
+hs_endpoint_deferred.addCallback(received_endpoint)
+
+
 reactor.run()
