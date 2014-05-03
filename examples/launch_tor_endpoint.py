@@ -32,19 +32,15 @@ def setup_complete(port):
     print "http://%s:%d" % (port.onion_uri, port.onion_port)
     print "locally listening on", port.getHost()
 
-def received_endpoint(endpoint):
-    print "endpoint %s" % (endpoint,)
-    if endpoint is None:
-        return
-    else:
-        endpoint.listen(site).addCallback(setup_complete).addErrback(setup_failed)
-
-
 
 # set a couple options to avoid conflict with the defaults if a Tor is
 # already running
-hs_endpoint_deferred = serverFromString(reactor, "onion:socksPort=0:controlPort=9089:publicPort=80")
-hs_endpoint_deferred.addCallback(received_endpoint)
-hs_endpoint_deferred.addErrback(setup_failed)
+endpoint = serverFromString(reactor, "onion:socksPort=0:controlPort=9089:publicPort=80")
+
+if endpoint is None:
+    print "fail"
+else:
+    print "my endpoint %s" % (endpoint,)
+    endpoint.listen(site).addCallback(setup_complete).addErrback(setup_failed)
 
 reactor.run()
