@@ -68,19 +68,13 @@ class TCPHiddenServiceEndpoint(object):
 
     implements(IStreamServerEndpoint)
 
-    def __init__(self, reactor, config, public_port, data_dir=None,
+    def __init__(self, reactor, public_port=None, data_dir=None,
+                 socks_port=None, control_port=None,
                  port_generator=functools.partial(random.randrange, 1024, 65534),
                  endpoint_generator=DefaultTCP4EndpointGenerator):
         """
         :param reactor:
             :api:`twisted.internet.interfaces.IReactorTCP` provider
-
-        :param config:
-            :class:`txtorcon.TorConfig` instance (doesn't need to be
-            bootstrapped). Note that `save()` will be called on this
-            at least once. FIXME should I just accept a
-            TorControlProtocol instance instead, and create my own
-            TorConfig?
 
         :param public_port:
             The port number we will advertise in the hidden serivces
@@ -103,26 +97,27 @@ class TCPHiddenServiceEndpoint(object):
             implements IServerEndpoint (by default TCP4ServerEndpoint)
         """
 
-        self.public_port = public_port
-        self.data_dir = data_dir
+        # the only non-optional argument
+        assert public_port is not None
+
+        self.public_port  = int(public_port)
+        self.data_dir     = data_dir
+        self.socks_port   = int(socks_port) if socks_port is not None else None
+        self.control_port = int(control_port) if control_port is not None else None
+
         self.onion_uri = None
         self.onion_private_key = None
+
         if self.data_dir:
             self._update_onion(self.data_dir)
-
         else:
             self.data_dir = tempfile.mkdtemp(prefix='tortmp')
 
-        # shouldn't need to use these
-        self.reactor = reactor
-        self.config = config
-        self.hiddenservice = None
-        self.port_generator = port_generator
+        self.reactor            = reactor
+        self.hiddenservice      = None
+        self.port_generator     = port_generator
         self.endpoint_generator = endpoint_generator
-
-        self.retries = 0
-
-        self.defer = defer.Deferred()
+        self.retries            = 0
 
     def _update_onion(self, thedir):
         """
@@ -153,13 +148,21 @@ class TCPHiddenServiceEndpoint(object):
         ## FIXME this should be anything that doesn't currently have a
         ## listener, and we should check that....or keep trying random
         ## ports if the "real" listen fails?
-        self.listen_port = 80
+        self.listen_port = self.port_generator()
 
         self.hiddenservice = HiddenService(self.config, self.data_dir,
                                            ['%d 127.0.0.1:%d' % (self.public_port,
                                                                  self.listen_port)])
         self.config.HiddenServices.append(self.hiddenservice)
         return arg
+
+    def _post_tor_launch_config(self, tor_process_protocol):
+        print "_post_tor_launch_config"
+        config      = TorConfig(tor_process_protocol.tor_protocol)
+        self.config = config
+        self._create_hiddenservice(None)
+        d = self.config.save()
+        return d
 
     def listen(self, protocolfactory):
         """
@@ -176,22 +179,21 @@ class TCPHiddenServiceEndpoint(object):
         """
 
         self.protocolfactory = protocolfactory
+
         if self.hiddenservice is None:
-            ## we don't have a hidden service yet, but if the config
-            ## isn't bootstrapped, we need to wait for it first
-            if self.config.post_bootstrap:
-                d = self.config.post_bootstrap.addCallback(self._create_hiddenservice)
+            config             = TorConfig()
+            config.SOCKSPort   = self.socks_port
+            config.ControlPort = self.control_port
 
-            else:
-                self._create_hiddenservice(None)
-                d = self.config.save()
-
+            d = launch_tor(config, self.reactor, progress_updates=None, timeout=60)
+            d.addCallback(self._post_tor_launch_config)
         else:
             ## we already have a hidden service created, but still
             ## want a Deferred so the _create_listener flow is the
             ## same
             d = defer.succeed(self)
 
+        print "almost end of listen method"
         d.addCallback(self._create_listener).addErrback(self._retry_local_port)
         return d
 
