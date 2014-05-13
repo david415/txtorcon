@@ -16,6 +16,7 @@ from twisted.python import log
 from twisted.internet import defer, error, protocol
 from twisted.internet.interfaces import IStreamServerEndpoint, IReactorTime
 from twisted.internet.endpoints import TCP4ClientEndpoint, TCP4ServerEndpoint
+from twisted.internet.endpoints import clientFromString
 from zope.interface import implements
 from zope.interface import implementer
 from twisted.internet.interfaces import IListeningPort
@@ -26,10 +27,14 @@ from twisted.internet.interfaces import IStreamServerEndpointStringParser
 from twisted.internet.endpoints import serverFromString
 from twisted.python.usage import UsageError
 
+import txtorcon
 from txtorcon.torcontrolprotocol import parse_keywords, TorProtocolFactory
 from txtorcon.util import delete_file_or_tree, find_keywords, find_tor_binary
 from txtorcon.log import txtorlog
 from txtorcon.interface import ITorControlProtocol
+
+
+launched_tor_control_port = None
 
 
 class TorNotFound(RuntimeError):
@@ -285,11 +290,24 @@ class TCPHiddenServiceEndpoint(object):
         d = self.config.save()
         return d
 
+    def _post_tor_connect(self, tor_protocol):
+        print "_post_tor_connect"
+        self.config = TorConfig(tor_protocol)
+        d = self.config.post_bootstrap
+        d.addCallback(self._create_hiddenservice)
+        return d
+
     def _post_tor_launch_config(self, tor_process_protocol):
         """
         Internal callback to configure a tor instance after the
         deferred returned from launch_tor has fired.
         """
+        print "_post_tor_launch_config"
+        global launched_tor_control_port
+
+        print "my control port is %s" % self.config.ControlPort
+
+        launched_tor_control_port = self.config.ControlPort
         self.config = TorConfig(tor_process_protocol.tor_protocol)
 
         if self.config.post_bootstrap:
@@ -299,6 +317,9 @@ class TCPHiddenServiceEndpoint(object):
             self._create_hiddenservice(None)
             d = self.config.save()
         return d
+
+    def _build_tor_connection(self):
+        pass
 
     def listen(self, protocolfactory):
         """
@@ -314,22 +335,47 @@ class TCPHiddenServiceEndpoint(object):
         accepted the hidden service's config.
         """
         self.protocolfactory = protocolfactory
-        if self.hiddenservice is None:
-            if self.config.protocol is None:
-                ## launch tor proc if not already launched before configuring
-                d = launch_tor(self.config, self.reactor, progress_updates=None, timeout=60)
-                d.addCallback(self._post_tor_launch_config)
-            elif self.config.post_bootstrap:
-                ## wait for tor bootstrap to finish before configuring
-                d = self.config.post_bootstrap.addCallback(self._create_hiddenservice)
-            else:
-                ## we are bootstrapped already, now we can configure tor
-                d = self._create_hiddenservice(None)
-        else:
+
+        # XXX
+        # TODO:
+        # when Tor bug 11291 is resolved then
+        # first try to connect to the system tor control port
+        # and create a hidden service like that...
+        global launched_tor_control_port
+
+        if self.hiddenservice is not None:
             ## we already have a hidden service created, but still
             ## want a Deferred so the _create_listener flow is the
-            ## same
+            ## same            
             d = defer.succeed(self)
+        elif self.config.protocol is None:
+
+            if launched_tor_control_port is not None:
+                ## connect to an already launched tor proc
+
+                print "connect to an already launched tor proc on control port %s" % launched_tor_control_port
+
+                try:
+                    torendpoint = clientFromString(self.reactor, 'tcp:127.0.0.1:%s' % launched_tor_control_port)
+                except ValueError:
+                    torendpoint = clientFromString(self.reactor, 'unix:%s' % launched_tor_control_port)
+
+                d = txtorcon.build_tor_connection(torendpoint, build_state=False)
+                d.addCallback(self._post_tor_connect)
+
+            else:
+                ## launch tor proc if not already launched before configuring
+                print "launch new tor proc"
+                d = launch_tor(self.config, self.reactor, progress_updates=None, timeout=60)
+                d.addCallback(self._post_tor_launch_config)
+
+        elif self.config.post_bootstrap:
+            ## wait for tor bootstrap to finish before configuring
+            d = self.config.post_bootstrap.addCallback(self._create_hiddenservice)
+        else:
+            ## we are bootstrapped already, now we can configure tor
+            d = self._create_hiddenservice(None)
+
         d.addCallback(self._create_listener).addErrback(self._retry_local_port)
         return d
 
