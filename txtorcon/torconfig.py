@@ -33,6 +33,8 @@ from txtorcon.util import delete_file_or_tree, find_keywords, find_tor_binary
 from txtorcon.log import txtorlog
 from txtorcon.interface import ITorControlProtocol
 
+from collections import deque
+
 
 class DeferredDispatcher(object):
     """
@@ -54,7 +56,7 @@ class DeferredDispatcher(object):
         3. started and fired
     """
     def __init__(self):
-        self.deferred_chains = []
+        self.deferred_chains = deque()
         self.is_fired = False
         self.is_started = False
         self.value = None
@@ -69,7 +71,7 @@ class DeferredDispatcher(object):
         self.is_fired = True
         self.value = value
         while len(self.deferred_chains) > 0:
-            d = self.deferred_chains.pop(0)
+            d = self.deferred_chains.popleft()
             d.callback(self.value)
 
     def fireWhenReady(self, d):
