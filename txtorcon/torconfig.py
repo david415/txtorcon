@@ -38,6 +38,18 @@ from collections import deque
 
 class DeferredDispatcher(object):
     """
+    Note:
+    This class expresses a more or less duplicate concern to that
+    in this Twisted trac ticket:
+    https://twistedmatrix.com/trac/ticket/6365
+    When this ticket is resolved then we can use Twisted's core api
+    instead of this class.
+
+    Brian Warner also wrote one as well:
+    https://github.com/tahoe-lafs/tahoe-lafs/blob/master/src/allmydata/util/observer.py
+    ...however it uses "eventually()" from Foolscap here:
+    https://github.com/warner/foolscap/blob/master/foolscap/eventual.py
+
     This class is used to fire a list of Deferreds; it keeps track
     of the "before fired" and "after fired" states such that:
 
@@ -47,16 +59,14 @@ class DeferredDispatcher(object):
         - "after fired" state a DeferredDispatcher object will
         immediately fire the deferreds passed to `fireWhenReady`
 
-    We also keep track of a "start" state boolean value... but maybe this
-    should be removed from this class?
-
+    We also keep track of a "start" state boolean value.
     An instance of this class should transition from states 1-3:
-        1. not start and not fired
+        1. not started and not fired
         2. started and not fired
         3. started and fired
     """
     def __init__(self):
-        self.deferred_chains = deque()
+        self.deferred_chains = []
         self.is_fired = False
         self.is_started = False
         self.value = None
@@ -70,9 +80,9 @@ class DeferredDispatcher(object):
         assert not self.is_fired
         self.is_fired = True
         self.value = value
-        while len(self.deferred_chains) > 0:
-            d = self.deferred_chains.popleft()
+        for d in self.deferred_chains:
             d.callback(self.value)
+        self.deferred_chains = []
 
     def fireWhenReady(self, d):
         assert self.is_started
